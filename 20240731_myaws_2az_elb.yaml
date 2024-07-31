@@ -1,0 +1,432 @@
+# Variables - - - - - - - - - - - - - - -  - -
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Stack Configuration
+        Parameters:
+          - EnvironmentName
+          - ProjectName
+      - Label:
+          default: VPC Configuration
+        Parameters:
+          - Region
+          - VpcCIDR
+          - AZ1PublicSubnetCIDR
+          - AZ1PrivateSubnetCIDR
+          - AZ2PublicSubnetCIDR
+          - AZ2PrivateSubnetCIDR
+
+Parameters:
+  VpcCIDR:
+    Type: String
+    Default: 10.100.0.0/16
+  AZ1PublicSubnetCIDR:
+    Type: String
+    Default: 10.100.1.0/24
+  AZ1PrivateSubnetCIDR:
+    Type: String
+    Default: 10.100.2.0/24
+  AZ2PublicSubnetCIDR:
+    Type: String
+    Default: 10.100.3.0/24
+  AZ2PrivateSubnetCIDR:
+    Type: String
+    Default: 10.100.4.0/24
+  Region:
+    Type: String
+    Default: ap-northeast-1
+    Description: Please choose the region.
+  MyKeyName:
+    Description: EC2 Key Pair to allow SSH access to the instance
+    Type: "AWS::EC2::KeyPair::KeyName"
+
+#--------------------------------------------------------------------------
+# --------------------------------------
+# VPC and Common resources between AZs
+# --------------------------------------
+Resources:
+  MyVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      Tags:
+        - Key: Name
+          Value: demo-stack
+        - Key: group_name
+          Value: SIM
+
+  # Gateway  - - - - - - - - - - - - - -
+  # InternetGateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: FirstVPC-IGW
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref MyVPC
+      InternetGatewayId: !Ref InternetGateway
+  # --------------------------------------------
+
+  # SecurityGroup(Common?)  - - - - - - - - - - - - - - - - - - - -
+  # Public
+  MySecurityGroupPublic:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SSH access via ssh
+      VpcId: !Ref MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+  # Private
+  MySecurityGroupPrivate:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SSH access via ssh
+      VpcId: !Ref MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+  # END  SecurityGroup  - - - - - - - - - - - - - - - - - -
+
+  # Elastic IP  - - - - - -
+  #for EC2 Instance
+  MyEIPforAZ1PubEC2:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref AZ1MyEc2InstancePublic
+  MyEIPforAZ2PubEC2:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref AZ2MyEc2InstancePublic
+  # for NAT
+  MyEIPforAZ1NAT:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    Properties:
+      Domain: MyVPC
+  MyEIPforAZ2NAT:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    Properties:
+      Domain: MyVPC
+  # END   Elastic IP  - - - - - - - - - - - - - - - - - -
+
+  # ---------------------------------------------------------------------------
+  # AZ1 ((ap-noatheast-1c) resources
+  # ---------------------------------------------------------------------------
+
+  # NAT Gateway ----------------------
+  AZ1NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId:
+        Fn::GetAtt:
+          - MyEIPforAZ1NAT
+          - AllocationId
+      SubnetId: !Ref AZ1PublicSubnet
+      Tags:
+        - Key: Name
+          Value: az1-public-subnet-ngw
+  #------------------------------------
+
+  # Subnet  - - - - - - - - - - - - - -
+  # Public
+  AZ1PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: !Ref AZ1PublicSubnetCIDR
+      AvailabilityZone: !Select
+        - 0
+        - Fn::GetAZs: !Ref AWS::Region
+  # Private
+  AZ1PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: !Ref AZ1PrivateSubnetCIDR
+      AvailabilityZone: !Select
+        - 0
+        - Fn::GetAZs: !Ref AWS::Region
+  # END  Subnet  - - - - - - - - - - - - - - - - - -
+
+  # RouteTable  - - - - - - - - - - - - - -
+  # Public
+  AZ1PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MyVPC
+      Tags:
+        - Key: Name
+          Value: MyVPC-PublicRoute
+  AZ1PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref AZ1PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  AZ1PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref AZ1PublicSubnet
+      RouteTableId: !Ref AZ1PublicRouteTable
+  # Private
+  AZ1PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MyVPC
+      Tags:
+        - Key: Name
+          Value: MyVPC-PrivateRoute
+  AZ1PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref AZ1PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref AZ1NATGateway
+  AZ1PrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref AZ1PrivateSubnet
+      RouteTableId: !Ref AZ1PrivateRouteTable
+  # END  RouteTable  - - - - - - -  - - - - - - - - - -
+
+  # EC2  - - - - - - - - - - - - - -
+  # Public
+  AZ1MyEc2InstancePublic:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId: ami-00d101850e971728d
+      SubnetId: !Ref AZ1PublicSubnet
+      SecurityGroupIds:
+        - !Ref MySecurityGroupPublic
+      KeyName: !Ref MyKeyName
+      Tags:
+        - Key: Name
+          Value: AZ1MyEC2Public
+  # Private
+  AZ1MyEc2InstancePrivate:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId: ami-00d101850e971728d
+      SubnetId: !Ref AZ1PrivateSubnet
+      SecurityGroupIds:
+        - !Ref MySecurityGroupPrivate
+      KeyName: !Ref MyKeyName
+      Tags:
+        - Key: Name
+          Value: AZ1MyEC2Private
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install -y httpd
+          systemctl start httpd
+          systemctl enable httpd
+          echo "<html><body><h1>Hello from AZ1MyEc2InstancePrivate! </h1></body></html>" > /var/www/html/index.html
+  # END  EC2  - - - - - - -  - - - - - - - - - -
+  # ---------------------------------------------------------------------------
+  # AZ2 (ap-noatheast-1c) resources
+  # ---------------------------------------------------------------------------
+
+  # NAT Gateway ----------------------
+  AZ2NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId:
+        Fn::GetAtt:
+          - MyEIPforAZ2NAT
+          - AllocationId
+      SubnetId: !Ref AZ1PublicSubnet
+      Tags:
+        - Key: Name
+          Value: az2-public-subnet-ngw
+  #------------------------------------
+
+  # Subnet  - - - - - - - - - - - - - - - - - - - -
+  # Public
+  AZ2PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: !Ref AZ2PublicSubnetCIDR
+      AvailabilityZone: !Select
+        - 1
+        - Fn::GetAZs: !Ref AWS::Region
+  # Private
+  AZ2PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: !Ref AZ2PrivateSubnetCIDR
+      AvailabilityZone: !Select
+        - 1
+        - Fn::GetAZs: !Ref AWS::Region
+  # END  Subnet  - - - - - - - - - - - - - - - - - -
+
+  # RouteTable  - - - - - - - - - - - - - -
+  # Public
+  AZ2PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MyVPC
+      Tags:
+        - Key: Name
+          Value: MyVPC-PublicRoute
+  AZ2PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref AZ2PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  AZ2PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref AZ2PublicSubnet
+      RouteTableId: !Ref AZ2PublicRouteTable
+  # Private
+  AZ2PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MyVPC
+      Tags:
+        - Key: Name
+          Value: MyVPC-PrivateRoute
+  AZ2PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref AZ2PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref AZ2NATGateway
+  AZ2PrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref AZ2PrivateSubnet
+      RouteTableId: !Ref AZ2PrivateRouteTable
+  # END  RouteTable  - - - - - - -  - - - - - - - - - -
+
+  # EC2  - - - - - - - - - - - - - -
+  # Public
+  AZ2MyEc2InstancePublic:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId: ami-00d101850e971728d
+      SubnetId: !Ref AZ2PublicSubnet
+      SecurityGroupIds:
+        - !Ref MySecurityGroupPublic
+      KeyName: !Ref MyKeyName
+      Tags:
+        - Key: Name
+          Value: AZ2MyEC2Public
+  # Private
+  AZ2MyEc2InstancePrivate:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId: ami-00d101850e971728d
+      SubnetId: !Ref AZ2PrivateSubnet
+      SecurityGroupIds:
+        - !Ref MySecurityGroupPrivate
+      KeyName: !Ref MyKeyName
+      Tags:
+        - Key: Name
+          Value: AZ2MyEC2Private
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install -y httpd
+          systemctl start httpd
+          systemctl enable httpd
+          echo "<html><body><h1>Hello from AZ2MyEc2InstancePrivate!</h1></body></html>" > /var/www/html/index.html
+  # END  EC2  - - - - - - -  - - - - - - - - - -
+  # ---------------------------------------------------------------------------
+  # ALB
+  # ---------------------------------------------------------------------------
+  # Application Load Balancer
+  MyALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: "MyALB"
+      Subnets:
+        - !Ref AZ1PrivateSubnet
+        - !Ref AZ2PrivateSubnet
+      SecurityGroups:
+        - !Ref MySecurityGroupforALB
+      Scheme: "internet-facing"
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: "60"
+  # TargetGroup
+  MyTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: "MyTargetGroup"
+      Port: 80
+      Protocol: "HTTP"
+      VpcId: !Ref MyVPC
+      HealthCheckIntervalSeconds: 30
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: "80"
+      HealthCheckPath: "/"
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      Targets:
+        - Id: !Ref AZ1MyEc2InstancePrivate
+          Port: 80
+        - Id: !Ref AZ2MyEc2InstancePrivate
+          Port: 80
+  # ALB Listener
+  MyListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: "forward"
+          TargetGroupArn: !Ref MyTargetGroup
+      LoadBalancerArn: !Ref MyALB
+      Port: 80
+      Protocol: "HTTP"
+  # Security Group
+  MySecurityGroupforALB:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Security group for ALB"
+      VpcId: !Ref MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: "tcp"
+          FromPort: "80"
+          ToPort: "80"
+          CidrIp: "0.0.0.0/0"
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
